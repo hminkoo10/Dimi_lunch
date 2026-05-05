@@ -55,6 +55,8 @@ CONTENT_LEFT_RATIO = 0.10
 CONTENT_RIGHT_RATIO = 0.90
 CONTENT_TOP_RATIO = 0.265
 CONTENT_BOTTOM_RATIO = 0.87
+NO_MEAL_TEXT = "급식 정보가 없습니다."
+MEAL_CONTENT_KEYS = (("일반식", "regular"), ("간편식", "simple"), ("추가", "plus"))
 
 
 def load_json(path: Path) -> dict:
@@ -455,21 +457,33 @@ def fetch_meal_payload(date_text: str) -> dict:
     return payload
 
 
-def meal_text_from_payload(payload: dict, meal_key: str) -> str:
+def meal_sections_from_payload(payload: dict, meal_key: str) -> list[tuple[str, list[str]]]:
     meal_data = (payload.get("data", {}) or {}).get(meal_key, {}) or {}
 
-    blocks: list[str] = []
-    for title, key in (("일반식", "regular"), ("간편식", "simple"), ("추가", "plus")):
+    sections: list[tuple[str, list[str]]] = []
+    for title, key in MEAL_CONTENT_KEYS:
         items = [str(item).strip() for item in (meal_data.get(key, []) or []) if str(item).strip()]
         if not items:
             continue
+        sections.append((title, items))
+    return sections
+
+
+def has_meal_from_payload(payload: dict, meal_key: str) -> bool:
+    return bool(meal_sections_from_payload(payload, meal_key))
+
+
+def meal_text_from_payload(payload: dict, meal_key: str) -> str:
+    sections = meal_sections_from_payload(payload, meal_key)
+    if not sections:
+        return NO_MEAL_TEXT
+
+    blocks: list[str] = []
+    for title, items in sections:
         blocks.append(title)
         for item in items:
             blocks.append(f"- {item}")
         blocks.append("")
-
-    if not blocks:
-        return "급식 정보가 없습니다."
 
     if blocks[-1] == "":
         blocks.pop()
@@ -706,6 +720,12 @@ def run_upload_for_meal(
     image_path = ""
     try:
         payload = fetch_meal_payload(date_text)
+        if not has_meal_from_payload(payload, meal_key):
+            state[meal_key] = date_text
+            save_state(state)
+            print(f"[Upload] {date_text} {meal_key} 급식 없음 - 업로드 건너뜀")
+            return client
+
         meal_text = meal_text_from_payload(payload, meal_key)
         image_path = create_meal_image(meal_text, meal_key, target_date)
         caption = build_caption(meal_key, meal_text, target_date)
@@ -773,6 +793,11 @@ def test_once(meal_key: str = "lunch", date_text: str | None = None, upload: boo
         target_date = datetime.strptime(date_text, "%Y-%m-%d").date()
 
     payload = fetch_meal_payload(date_text)
+    meal_available = has_meal_from_payload(payload, meal_key)
+    if upload and not meal_available:
+        print(f"[Test] {date_text} {meal_key} 급식 없음 - Instagram 업로드 건너뜀")
+        return ""
+
     meal_text = meal_text_from_payload(payload, meal_key)
     image_path = create_meal_image(meal_text, meal_key, target_date)
     print(f"[Test] 이미지 생성 완료: {image_path}")
